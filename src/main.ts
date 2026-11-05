@@ -5,7 +5,6 @@ import {
   InstrumentId,
   InstrumentSpec,
   ReferencePitch,
-  SimulatorState,
   TelemetryFrame,
 } from './types';
 import {
@@ -51,33 +50,16 @@ class StringsVisualCoachApp {
   private renderer: SoundCanvasRenderer | null = null;
 
   // Recording / Replay state
-  // isPaused === false means actively recording live input/simulator
+  // isPaused === false means actively recording live microphone input
   private isPaused = false;
   private scrubbedSessionTime = 0;
   private sessionClockSeconds = 0;
   private lastRafTime = performance.now();
   private rafId: number | null = null;
 
-  // Built-in Interactive Simulator state
-  private activeDrawerTab: 'filters' | 'simulator' = 'filters';
+  // DSP Filter Drawer state
+  private isFiltersDrawerOpen = false;
   private filterSettings: FilterSettings;
-
-  private simulator: SimulatorState = {
-    enabled: true,
-    drawerOpen: false,
-    playing: true,
-    targetMidi: 69, // A4 (Ля4)
-    centsOffset: 0,
-    bowNoise: 6,
-    secondStringLeak: 0,
-    secondStringIndex: -1,
-    vibrato: 5,
-    autoMode: 'etude',
-    monitorAudible: false,
-    monitorVolume: 65,
-  };
-
-  private autoPhaseTime = 0;
 
   // Canvas drag-to-scrub state
   private isDraggingCanvas = false;
@@ -261,16 +243,14 @@ class StringsVisualCoachApp {
 
   public async selectInstrumentAndLaunch(id: InstrumentId): Promise<void> {
     this.selectedInstrument = INSTRUMENTS[id];
-    this.simulator.targetMidi = this.selectedInstrument.strings[2].midi;
-    this.simulator.centsOffset = 0;
     this.isPaused = false;
     this.audioEngine.isRecordingBuffer = true;
     this.sessionClockSeconds = 0;
     this.scrubbedSessionTime = 0;
-    this.autoPhaseTime = 0;
 
     this.audioEngine.setConfiguration(this.selectedInstrument, this.refA4);
     await this.audioEngine.ensureContext();
+    await this.audioEngine.enableMicrophone();
 
     this.currentScreen = 'live';
     this.renderCurrentScreen();
@@ -291,17 +271,6 @@ class StringsVisualCoachApp {
           `<option value="${mode}" ${this.gridMode === mode ? 'selected' : ''}>${KEY_SIGNATURES[mode].labelRu}</option>`
       )
       .join('');
-
-    const noteOptionsHtml: string[] = [];
-    for (let m = inst.strings[0].midi - 2; m <= inst.strings[3].midi + 7; m++) {
-      const openStr = inst.strings.find((s) => s.midi === m);
-      const label = openStr
-        ? `★ ${formatMidiNoteRu(m, this.gridMode)} (${openStr.noteEn} • ${openStr.roman})`
-        : `${formatMidiNoteRu(m, this.gridMode)} (${midiToFreq(m, this.refA4).toFixed(1)} Гц)`;
-      noteOptionsHtml.push(
-        `<option value="${m}" ${this.simulator.targetMidi === m ? 'selected' : ''}>${label}</option>`
-      );
-    }
 
     const bufferDurations = [30, 60, 120, 180];
 
@@ -335,22 +304,12 @@ class StringsVisualCoachApp {
             <button
               type="button"
               id="btn-filter-toggle"
-              class="btn-ui btn-icon-with-text ${this.activeDrawerTab === 'filters' && this.simulator.drawerOpen ? 'active' : ''}"
+              class="btn-ui btn-icon-with-text ${this.isFiltersDrawerOpen ? 'active' : ''}"
               title="Фильтры звука и шумоподавление микрофона"
               aria-label="Фильтры"
             >
               <span>🎛️</span>
               <span class="btn-text-label">Фильтры</span>
-            </button>
-            <button
-              type="button"
-              id="btn-sim-toggle"
-              class="btn-ui btn-icon-with-text ${this.activeDrawerTab === 'simulator' && this.simulator.drawerOpen ? 'active' : ''}"
-              title="Открыть DSP-симулятор смычка"
-              aria-label="Симулятор"
-            >
-              <span>🎻</span>
-              <span class="btn-text-label">Симулятор</span>
             </button>
             <button
               type="button"
@@ -364,55 +323,25 @@ class StringsVisualCoachApp {
           </div>
         </header>
 
-        <!-- DSP DRAWER (FILTERS & SIMULATOR TABS) -->
+        <!-- DSP FILTERS DRAWER -->
         <aside
-          class="sim-drawer ${this.simulator.drawerOpen ? '' : 'drawer-collapsed'}"
+          class="sim-drawer ${this.isFiltersDrawerOpen ? '' : 'drawer-collapsed'}"
           id="sim-drawer"
-          aria-label="Панель DSP"
+          aria-label="Фильтры звука"
         >
           <div class="sim-drawer-header">
-            <div class="drawer-tabs">
-              <button
-                type="button"
-                id="tab-btn-filters"
-                class="drawer-tab-btn ${this.activeDrawerTab === 'filters' ? 'active' : ''}"
-                title="Настройки фильтров микрофона для реальной игры"
-              >🎛️ Фильтры</button>
-              <button
-                type="button"
-                id="tab-btn-simulator"
-                class="drawer-tab-btn ${this.activeDrawerTab === 'simulator' ? 'active' : ''}"
-                title="Встроенный симулятор инструмента"
-              >🎻 Симулятор</button>
-            </div>
+            <span class="drawer-header-title" style="font-weight:700; font-size:14px; color:#F8FAFC; display:flex; align-items:center; gap:6px;">
+              <span>🎛️</span>
+              <span>Фильтры микрофона</span>
+            </span>
 
             <div class="sim-header-actions">
               <button
                 type="button"
-                id="btn-sim-play-silence"
-                class="sim-icon-btn ${this.simulator.playing && this.simulator.enabled ? 'playing' : 'paused'}"
-                style="${this.activeDrawerTab === 'simulator' ? '' : 'display:none;'}"
-                title="Play / Pause симулятора"
-                aria-label="Play / Pause симулятора"
-              >
-                ${this.simulator.playing && this.simulator.enabled ? PAUSE_SVG_ICON : PLAY_SVG_ICON}
-              </button>
-              <button
-                type="button"
-                id="btn-sim-speaker"
-                class="sim-icon-btn ${this.simulator.monitorAudible ? 'speaker-on' : ''}"
-                style="${this.activeDrawerTab === 'simulator' ? '' : 'display:none;'}"
-                title="Звук симулятора в динамики"
-                aria-label="Звук симулятора в динамики"
-              >
-                ${this.simulator.monitorAudible ? '🔊' : '🔇'}
-              </button>
-              <button
-                type="button"
                 id="btn-drawer-close"
                 class="sim-icon-btn"
-                title="Закрыть панель"
-                aria-label="Закрыть панель"
+                title="Закрыть панель фильтров"
+                aria-label="Закрыть панель фильтров"
               >
                 ✕
               </button>
@@ -421,11 +350,11 @@ class StringsVisualCoachApp {
 
           <div
             id="sim-drawer-body"
-            class="sim-drawer-body ${this.simulator.drawerOpen ? '' : 'is-collapsed'}"
-            ${this.simulator.drawerOpen ? '' : 'hidden'}
+            class="sim-drawer-body ${this.isFiltersDrawerOpen ? '' : 'is-collapsed'}"
+            ${this.isFiltersDrawerOpen ? '' : 'hidden'}
           >
             <div class="sim-drawer-inner" id="drawer-inner-content">
-              ${this.activeDrawerTab === 'filters' ? this.getFiltersTabHtml() : this.getSimulatorTabHtml(inst, noteOptionsHtml)}
+              ${this.getFiltersTabHtml()}
             </div>
           </div>
         </aside>
@@ -504,18 +433,6 @@ class StringsVisualCoachApp {
   private formatCents(c: number): string {
     const r = Math.round(c);
     return r > 0 ? `+${r}¢` : `${r}¢`;
-  }
-
-  private getNoteOptionsHtml(inst: InstrumentSpec): string[] {
-    const noteOptionsHtml: string[] = [];
-    for (let m = inst.minMidi; m <= inst.maxMidi; m++) {
-      const isSelected = m === this.simulator.targetMidi;
-      const label = `${formatMidiNoteRu(m, this.gridMode)} (MIDI ${m})`;
-      noteOptionsHtml.push(
-        `<option value="${m}" ${isSelected ? 'selected' : ''}>${label}</option>`
-      );
-    }
-    return noteOptionsHtml;
   }
 
   private getFiltersTabHtml(): string {
@@ -672,93 +589,6 @@ class StringsVisualCoachApp {
     `;
   }
 
-  private getSimulatorTabHtml(inst: InstrumentSpec, noteOptionsHtml: string[]): string {
-    return `
-      <!-- Compact Mode Buttons -->
-      <div class="sim-controls-inline">
-        <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'etude' ? 'active' : ''}" data-sim-mode="etude">Авто-этюд</button>
-        <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'scale' ? 'active' : ''}" data-sim-mode="scale">Гамма</button>
-        <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'open-strings' ? 'active' : ''}" data-sim-mode="open-strings">Струны</button>
-        <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'manual' ? 'active' : ''}" data-sim-mode="manual">Ручной</button>
-      </div>
-
-      <!-- Target Note & Open String Quick Buttons -->
-      <div class="sim-row">
-        <div class="sim-row-header">
-          <label for="sim-target-note">Нота:</label>
-          <div class="sim-controls-inline">
-            ${inst.strings
-              .map(
-                (s) => `
-              <button
-                type="button"
-                class="sim-preset-btn"
-                data-quick-midi="${s.midi}"
-                style="border-color:${s.color};color:#F8FAFC;"
-              >${s.roman}:${s.nameRu}</button>
-            `
-              )
-              .join('')}
-          </div>
-        </div>
-        <select id="sim-target-note" class="select-ui" style="max-width:100%;">
-          ${noteOptionsHtml.join('')}
-        </select>
-      </div>
-
-      <!-- Cents Offset Slider (-50 to +50) -->
-      <div class="sim-row">
-        <div class="sim-row-header">
-          <label for="sim-cents-slider">Интонация (Cents):</label>
-          <span class="sim-row-val" id="sim-cents-val">${this.formatCents(this.simulator.centsOffset)}</span>
-        </div>
-        <input
-          type="range"
-          id="sim-cents-slider"
-          class="sim-slider"
-          min="-50"
-          max="50"
-          step="1"
-          value="${this.simulator.centsOffset}"
-        />
-      </div>
-
-      <!-- Bow Noise / Scratch Slider (0% to 100%) -->
-      <div class="sim-row">
-        <div class="sim-row-header">
-          <label for="sim-noise-slider">Шум смычка (Blur):</label>
-          <span class="sim-row-val" id="sim-noise-val">${Math.round(this.simulator.bowNoise)}%</span>
-        </div>
-        <input
-          type="range"
-          id="sim-noise-slider"
-          class="sim-slider"
-          min="0"
-          max="100"
-          step="1"
-          value="${Math.round(this.simulator.bowNoise)}"
-        />
-      </div>
-
-      <!-- Adjacent Open String Leak Slider (0% to 100%) -->
-      <div class="sim-row">
-        <div class="sim-row-header">
-          <label for="sim-leak-slider">2-я открытая струна:</label>
-          <span class="sim-row-val" id="sim-leak-val">${Math.round(this.simulator.secondStringLeak)}%</span>
-        </div>
-        <input
-          type="range"
-          id="sim-leak-slider"
-          class="sim-slider"
-          min="0"
-          max="100"
-          step="1"
-          value="${Math.round(this.simulator.secondStringLeak)}"
-        />
-      </div>
-    `;
-  }
-
   private bindLiveScreenEvents(canvas: HTMLCanvasElement): void {
     // 1. Back to Instrument Selection (Screen 1)
     const backBtn = this.root.querySelector<HTMLButtonElement>('#btn-back-setup');
@@ -781,8 +611,6 @@ class StringsVisualCoachApp {
         micBtn.classList.remove('active-mic', 'error-mic');
         micBtn.title = 'Включить микрофон';
       } else {
-        this.simulator.enabled = false;
-        this.simulator.playing = false;
         const ok = await this.audioEngine.enableMicrophone();
         if (ok) {
           micBtn.classList.remove('error-mic');
@@ -791,7 +619,6 @@ class StringsVisualCoachApp {
           if (this.isPaused) {
             this.startRecording();
           }
-          this.syncSimulatorUI();
         } else {
           micBtn.classList.add('error-mic');
           micBtn.title = this.audioEngine.micError ?? 'Нет доступа к микрофону';
@@ -799,25 +626,10 @@ class StringsVisualCoachApp {
       }
     });
 
-    // 4. Tab / Drawer Toggles
+    // 4. Filter Drawer Toggle & Close
     const filterToggleBtn = this.root.querySelector<HTMLButtonElement>('#btn-filter-toggle');
     filterToggleBtn?.addEventListener('click', () => {
-      this.openDrawerTab('filters');
-    });
-
-    const simToggleBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-toggle');
-    simToggleBtn?.addEventListener('click', () => {
-      this.openDrawerTab('simulator');
-    });
-
-    const tabFiltersBtn = this.root.querySelector<HTMLButtonElement>('#tab-btn-filters');
-    tabFiltersBtn?.addEventListener('click', () => {
-      this.switchDrawerTab('filters');
-    });
-
-    const tabSimBtn = this.root.querySelector<HTMLButtonElement>('#tab-btn-simulator');
-    tabSimBtn?.addEventListener('click', () => {
-      this.switchDrawerTab('simulator');
+      this.toggleFiltersDrawer();
     });
 
     const drawerCloseBtn = this.root.querySelector<HTMLButtonElement>('#btn-drawer-close');
@@ -832,12 +644,7 @@ class StringsVisualCoachApp {
       }
     });
 
-    // Initial binding of the active tab
-    if (this.activeDrawerTab === 'filters') {
-      this.bindFilterTabEvents();
-    } else {
-      this.bindSimulatorTabEvents();
-    }
+    this.bindFilterTabEvents();
 
     // 11. Bottom Bar: Main Record / Stop Button
     const recordStopBtn = this.root.querySelector<HTMLButtonElement>('#btn-record-stop');
@@ -936,30 +743,49 @@ class StringsVisualCoachApp {
       const dx = ev.clientX - this.dragStartX;
       const dy = ev.clientY - this.dragStartY;
 
-      if (Math.abs(dx) > 6 && !this.isPaused) {
+      // Always allow vertical dragging to pan camera pitch smoothly
+      const midiDelta = (dy / canvas.clientHeight) * 14;
+      this.renderer.cameraCenterMidi = Math.max(
+        24,
+        Math.min(96, this.dragStartCameraMidi + midiDelta)
+      );
+
+      // If user drags horizontally while recording live, stop live recording and enter scrubber mode
+      if (Math.abs(dx) > 16 && !this.isPaused && Math.abs(dx) > Math.abs(dy)) {
         this.isPaused = true;
         this.audioEngine.isRecordingBuffer = false;
       }
 
       if (this.isPaused) {
-        if (this.audioEngine.isReplaying && Math.abs(dx) > 4) {
-          this.audioEngine.stopRecordedPlayback();
-        }
-        const headX = canvas.clientWidth * 0.75;
-        const pixelsPerSec = headX / this.renderer.getHistoryWindowSeconds();
-        const timeDelta = -dx / pixelsPerSec;
-        const bounds = this.audioEngine.getHistoryBounds();
-        this.scrubbedSessionTime = Math.max(
-          bounds.minTime,
-          Math.min(bounds.maxTime, this.dragStartSessionTime + timeDelta)
-        );
+        // If replaying recorded audio, only stop playback on an intentional horizontal scrub
+        // (Touching or scrolling vertically must NEVER stop replay!)
+        const isHorizontalScrubIntent = Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy) * 1.5;
 
-        const midiDelta = (dy / canvas.clientHeight) * 14;
-        this.renderer.cameraCenterMidi = Math.max(
-          24,
-          Math.min(96, this.dragStartCameraMidi + midiDelta)
-        );
-        this.syncTransportUI();
+        if (this.audioEngine.isReplaying) {
+          if (isHorizontalScrubIntent) {
+            this.audioEngine.stopRecordedPlayback();
+            const headX = canvas.clientWidth * 0.75;
+            const pixelsPerSec = headX / this.renderer.getHistoryWindowSeconds();
+            const timeDelta = -dx / pixelsPerSec;
+            const bounds = this.audioEngine.getHistoryBounds();
+            this.scrubbedSessionTime = Math.max(
+              bounds.minTime,
+              Math.min(bounds.maxTime, this.dragStartSessionTime + timeDelta)
+            );
+            this.syncTransportUI();
+          }
+        } else {
+          // Paused, not replaying: normal time scrubbing
+          const headX = canvas.clientWidth * 0.75;
+          const pixelsPerSec = headX / this.renderer.getHistoryWindowSeconds();
+          const timeDelta = -dx / pixelsPerSec;
+          const bounds = this.audioEngine.getHistoryBounds();
+          this.scrubbedSessionTime = Math.max(
+            bounds.minTime,
+            Math.min(bounds.maxTime, this.dragStartSessionTime + timeDelta)
+          );
+          this.syncTransportUI();
+        }
       }
     });
 
@@ -974,12 +800,15 @@ class StringsVisualCoachApp {
     });
   }
 
+  private toggleFiltersDrawer(): void {
+    this.setDrawerOpen(!this.isFiltersDrawerOpen);
+  }
+
   private setDrawerOpen(open: boolean): void {
-    this.simulator.drawerOpen = open;
+    this.isFiltersDrawerOpen = open;
     const simDrawer = this.root.querySelector<HTMLElement>('#sim-drawer');
     const simDrawerBody = this.root.querySelector<HTMLElement>('#sim-drawer-body');
     const filterBtn = this.root.querySelector<HTMLButtonElement>('#btn-filter-toggle');
-    const simBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-toggle');
 
     simDrawer?.classList.toggle('drawer-collapsed', !open);
     if (simDrawerBody) {
@@ -991,57 +820,7 @@ class StringsVisualCoachApp {
         simDrawerBody.classList.add('is-collapsed');
       }
     }
-    filterBtn?.classList.toggle('active', open && this.activeDrawerTab === 'filters');
-    simBtn?.classList.toggle('active', open && this.activeDrawerTab === 'simulator');
-  }
-
-  private openDrawerTab(tab: 'filters' | 'simulator'): void {
-    if (this.simulator.drawerOpen && this.activeDrawerTab === tab) {
-      this.setDrawerOpen(false);
-      return;
-    }
-    this.activeDrawerTab = tab;
-    this.refreshDrawerContent();
-    this.setDrawerOpen(true);
-  }
-
-  private switchDrawerTab(tab: 'filters' | 'simulator'): void {
-    if (this.activeDrawerTab === tab) return;
-    this.activeDrawerTab = tab;
-    this.refreshDrawerContent();
-    if (!this.simulator.drawerOpen) {
-      this.setDrawerOpen(true);
-    }
-  }
-
-  private refreshDrawerContent(): void {
-    const contentEl = this.root.querySelector<HTMLElement>('#drawer-inner-content');
-    const tabFiltersBtn = this.root.querySelector<HTMLButtonElement>('#tab-btn-filters');
-    const tabSimBtn = this.root.querySelector<HTMLButtonElement>('#tab-btn-simulator');
-    const playSilenceBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-play-silence');
-    const speakerBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-speaker');
-    const filterToggleBtn = this.root.querySelector<HTMLButtonElement>('#btn-filter-toggle');
-    const simToggleBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-toggle');
-
-    tabFiltersBtn?.classList.toggle('active', this.activeDrawerTab === 'filters');
-    tabSimBtn?.classList.toggle('active', this.activeDrawerTab === 'simulator');
-    filterToggleBtn?.classList.toggle('active', this.simulator.drawerOpen && this.activeDrawerTab === 'filters');
-    simToggleBtn?.classList.toggle('active', this.simulator.drawerOpen && this.activeDrawerTab === 'simulator');
-
-    if (playSilenceBtn) playSilenceBtn.style.display = this.activeDrawerTab === 'simulator' ? '' : 'none';
-    if (speakerBtn) speakerBtn.style.display = this.activeDrawerTab === 'simulator' ? '' : 'none';
-
-    if (!contentEl) return;
-    if (this.activeDrawerTab === 'filters') {
-      contentEl.innerHTML = this.getFiltersTabHtml();
-      this.bindFilterTabEvents();
-    } else {
-      const inst = this.selectedInstrument;
-      const noteOptionsHtml = this.getNoteOptionsHtml(inst);
-      contentEl.innerHTML = this.getSimulatorTabHtml(inst, noteOptionsHtml);
-      this.bindSimulatorTabEvents();
-      this.syncSimulatorUI();
-    }
+    filterBtn?.classList.toggle('active', open);
   }
 
   private bindFilterTabEvents(): void {
@@ -1196,65 +975,6 @@ class StringsVisualCoachApp {
     }
   }
 
-  private bindSimulatorTabEvents(): void {
-    this.root.querySelectorAll<HTMLButtonElement>('[data-sim-mode]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await this.audioEngine.ensureContext();
-        const mode = btn.dataset.simMode as SimulatorState['autoMode'];
-        this.simulator.enabled = true;
-        this.simulator.autoMode = mode;
-        this.simulator.playing = true;
-        this.autoPhaseTime = 0;
-        this.syncSimulatorUI();
-      });
-    });
-
-    this.root.querySelectorAll<HTMLButtonElement>('[data-quick-midi]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await this.audioEngine.ensureContext();
-        this.simulator.enabled = true;
-        this.simulator.autoMode = 'manual';
-        this.simulator.playing = true;
-        this.simulator.targetMidi = Number(btn.dataset.quickMidi);
-        this.simulator.centsOffset = 0;
-        this.syncSimulatorUI();
-      });
-    });
-
-    const targetNoteSelect = this.root.querySelector<HTMLSelectElement>('#sim-target-note');
-    targetNoteSelect?.addEventListener('change', async () => {
-      await this.audioEngine.ensureContext();
-      this.simulator.enabled = true;
-      this.simulator.autoMode = 'manual';
-      this.simulator.targetMidi = Number(targetNoteSelect.value);
-      this.syncSimulatorUI();
-    });
-
-    const centsSlider = this.root.querySelector<HTMLInputElement>('#sim-cents-slider');
-    centsSlider?.addEventListener('input', () => {
-      this.simulator.enabled = true;
-      this.simulator.autoMode = 'manual';
-      this.simulator.centsOffset = Number(centsSlider.value);
-      this.syncSimulatorUI();
-    });
-
-    const noiseSlider = this.root.querySelector<HTMLInputElement>('#sim-noise-slider');
-    noiseSlider?.addEventListener('input', () => {
-      this.simulator.enabled = true;
-      this.simulator.autoMode = 'manual';
-      this.simulator.bowNoise = Number(noiseSlider.value);
-      this.syncSimulatorUI();
-    });
-
-    const leakSlider = this.root.querySelector<HTMLInputElement>('#sim-leak-slider');
-    leakSlider?.addEventListener('input', () => {
-      this.simulator.enabled = true;
-      this.simulator.autoMode = 'manual';
-      this.simulator.secondStringLeak = Number(leakSlider.value);
-      this.syncSimulatorUI();
-    });
-  }
-
   private startRecording(): void {
     this.audioEngine.stopRecordedPlayback();
     this.isPaused = false;
@@ -1271,68 +991,6 @@ class StringsVisualCoachApp {
     const bounds = this.audioEngine.getHistoryBounds();
     this.scrubbedSessionTime = bounds.maxTime;
     this.syncTransportUI();
-  }
-
-  private syncSimulatorUI(): void {
-    const speakerBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-speaker');
-    if (speakerBtn) {
-      const spkState = this.simulator.monitorAudible ? 'on' : 'off';
-      if (speakerBtn.dataset.iconState !== spkState) {
-        speakerBtn.dataset.iconState = spkState;
-        speakerBtn.classList.toggle('speaker-on', this.simulator.monitorAudible);
-        speakerBtn.textContent = this.simulator.monitorAudible ? '🔊' : '🔇';
-      }
-    }
-
-    const playSilenceBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-play-silence');
-    if (playSilenceBtn) {
-      const isSimPlaying = this.simulator.playing && this.simulator.enabled;
-      const simPlayState = isSimPlaying ? 'playing' : 'paused';
-      if (playSilenceBtn.dataset.iconState !== simPlayState) {
-        playSilenceBtn.dataset.iconState = simPlayState;
-        playSilenceBtn.className = `sim-icon-btn ${simPlayState}`;
-        playSilenceBtn.innerHTML = isSimPlaying ? PAUSE_SVG_ICON : PLAY_SVG_ICON;
-      }
-    }
-
-    this.root.querySelectorAll<HTMLButtonElement>('[data-sim-mode]').forEach((btn) => {
-      btn.classList.toggle(
-        'active',
-        this.simulator.enabled && btn.dataset.simMode === this.simulator.autoMode
-      );
-    });
-
-    const targetSelect = this.root.querySelector<HTMLSelectElement>('#sim-target-note');
-    if (targetSelect && Number(targetSelect.value) !== this.simulator.targetMidi) {
-      targetSelect.value = String(this.simulator.targetMidi);
-    }
-
-    const centsSlider = this.root.querySelector<HTMLInputElement>('#sim-cents-slider');
-    const centsVal = this.root.querySelector<HTMLElement>('#sim-cents-val');
-    if (centsSlider && !centsSlider.matches(':active')) {
-      centsSlider.value = String(Math.round(this.simulator.centsOffset));
-    }
-    if (centsVal) {
-      centsVal.textContent = this.formatCents(this.simulator.centsOffset);
-    }
-
-    const noiseSlider = this.root.querySelector<HTMLInputElement>('#sim-noise-slider');
-    const noiseVal = this.root.querySelector<HTMLElement>('#sim-noise-val');
-    if (noiseSlider && !noiseSlider.matches(':active')) {
-      noiseSlider.value = String(Math.round(this.simulator.bowNoise));
-    }
-    if (noiseVal) {
-      noiseVal.textContent = `${Math.round(this.simulator.bowNoise)}%`;
-    }
-
-    const leakSlider = this.root.querySelector<HTMLInputElement>('#sim-leak-slider');
-    const leakVal = this.root.querySelector<HTMLElement>('#sim-leak-val');
-    if (leakSlider && !leakSlider.matches(':active')) {
-      leakSlider.value = String(Math.round(this.simulator.secondStringLeak));
-    }
-    if (leakVal) {
-      leakVal.textContent = `${Math.round(this.simulator.secondStringLeak)}%`;
-    }
   }
 
   private syncTransportUI(): void {
@@ -1407,93 +1065,19 @@ class StringsVisualCoachApp {
     }
   }
 
-  private stepSimulatorAutoSequence(dt: number): void {
-    if (!this.simulator.enabled || !this.simulator.playing || this.simulator.autoMode === 'manual') {
-      return;
-    }
-
-    this.autoPhaseTime += dt;
-    const t = this.autoPhaseTime;
-    const s = this.selectedInstrument.strings;
-    const baseMidi = s[1].midi;
-
-    if (this.simulator.autoMode === 'open-strings') {
-      const idx = Math.floor(t / 2.2) % 4;
-      this.simulator.targetMidi = s[idx].midi;
-      this.simulator.centsOffset = Math.sin(t * 2.1) * 4;
-      this.simulator.bowNoise = 6;
-      this.simulator.secondStringLeak = 0;
-      this.syncSimulatorUI();
-      return;
-    }
-
-    if (this.simulator.autoMode === 'scale') {
-      const scaleSteps = [0, 2, 4, 6, 7, 9, 11, 12, 11, 9, 7, 6, 4, 2];
-      const stepIdx = Math.floor(t / 1.45) % scaleSteps.length;
-      this.simulator.targetMidi = baseMidi + scaleSteps[stepIdx];
-      this.simulator.centsOffset = Math.sin(t * 3.0) * 5;
-      this.simulator.bowNoise = 7;
-      this.simulator.secondStringLeak = 0;
-      this.syncSimulatorUI();
-      return;
-    }
-
-    // Default 'etude' mode
-    const cycle = t % 16.0;
-
-    if (cycle < 3.0) {
-      this.simulator.targetMidi = cycle < 1.5 ? baseMidi : baseMidi + 2;
-      this.simulator.centsOffset = Math.sin(t * 4) * 3;
-      this.simulator.bowNoise = 5;
-      this.simulator.secondStringLeak = 0;
-    } else if (cycle < 5.5) {
-      // Sustained Semitone (Фа♯ / Соль♭) -> illuminates semitone badge
-      this.simulator.targetMidi = baseMidi + 4;
-      this.simulator.centsOffset = Math.sin(t * 2.5) * 4;
-      this.simulator.bowNoise = 6;
-      this.simulator.secondStringLeak = 0;
-    } else if (cycle < 8.5) {
-      // Intonation drift + Scratchy Bow Noise Aura
-      this.simulator.targetMidi = baseMidi + 5;
-      this.simulator.centsOffset = Math.sin((cycle - 5.5) * 2.3) * 36;
-      this.simulator.bowNoise = 68;
-      this.simulator.secondStringLeak = 0;
-    } else if (cycle < 12.0) {
-      // Accidental 2nd Open String Leak
-      this.simulator.targetMidi = baseMidi + 2;
-      this.simulator.centsOffset = 2;
-      this.simulator.bowNoise = 10;
-      this.simulator.secondStringLeak = 62;
-    } else {
-      // High register climb -> Top 25% Boundary Push & Spring Recentering
-      const climbIdx = Math.min(4, Math.floor((cycle - 12.0) / 0.8));
-      const climbOffsets = [7, 9, 11, 12, 12];
-      this.simulator.targetMidi = baseMidi + climbOffsets[climbIdx];
-      this.simulator.centsOffset = 0;
-      this.simulator.bowNoise = 7;
-      this.simulator.secondStringLeak = 0;
-    }
-
-    this.syncSimulatorUI();
-  }
-
   private tick(nowMs: number): void {
     const dt = Math.min(0.1, Math.max(0.001, (nowMs - this.lastRafTime) / 1000));
     this.lastRafTime = nowMs;
 
     if (!this.isPaused) {
       this.sessionClockSeconds += dt;
-      this.stepSimulatorAutoSequence(dt);
-      this.audioEngine.updateSimulatorAudio(this.simulator);
-
-      const latestFrame = this.audioEngine.sampleLiveFrame(this.sessionClockSeconds, this.simulator);
+      const latestFrame = this.audioEngine.sampleLiveFrame(this.sessionClockSeconds);
       this.scrubbedSessionTime = this.sessionClockSeconds;
-      this.renderer?.updateCameraPhysics(latestFrame, dt, false);
+      this.renderer?.updateCameraPhysics(latestFrame, dt, !this.isDraggingCanvas);
       this.updateTopReadout(latestFrame);
       this.updateFilterMetersUI();
       this.syncTransportUI();
     } else {
-      this.audioEngine.updateSimulatorAudio({ ...this.simulator, playing: false });
       const replayTime = this.audioEngine.getCurrentReplaySessionTime();
       if (replayTime !== null) {
         this.scrubbedSessionTime = replayTime;
@@ -1504,6 +1088,9 @@ class StringsVisualCoachApp {
       );
       if (inspectedFrame) {
         this.updateTopReadout(inspectedFrame);
+        if (this.audioEngine.isReplaying) {
+          this.renderer?.updateCameraPhysics(inspectedFrame, dt, !this.isDraggingCanvas);
+        }
       }
       this.updateFilterMetersUI();
       this.syncTransportUI();
@@ -1561,7 +1148,7 @@ class StringsVisualCoachApp {
   }
 
   private updateFilterMetersUI(): void {
-    if (!this.simulator.drawerOpen || this.activeDrawerTab !== 'filters') return;
+    if (!this.isFiltersDrawerOpen) return;
 
     const rmsFill = this.root.querySelector<HTMLElement>('#meter-rms-fill');
     const rmsVal = this.root.querySelector<HTMLElement>('#meter-rms-val');

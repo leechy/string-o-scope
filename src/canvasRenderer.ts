@@ -76,8 +76,8 @@ export class SoundCanvasRenderer {
    * - Top/Bottom 25% Boundary Push: Immediate scroll when pitch reaches top 25% or bottom 25%.
    * - Smooth Recentering: Critically damped spring gently eases stabilized pitch toward 50% center.
    */
-  public updateCameraPhysics(latestFrame: TelemetryFrame | null, dtSeconds: number, isPaused: boolean): void {
-    if (isPaused || !latestFrame) return;
+  public updateCameraPhysics(latestFrame: TelemetryFrame | null, dtSeconds: number, followPitch = true): void {
+    if (!followPitch || !latestFrame) return;
 
     const dt = Math.min(0.1, Math.max(0.001, dtSeconds));
     const activeMidi = latestFrame.primaryMidi;

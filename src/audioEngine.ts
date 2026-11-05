@@ -3,7 +3,6 @@ import {
   getDefaultFilterSettings,
   InstrumentSpec,
   ReferencePitch,
-  SimulatorState,
   TelemetryFrame,
 } from './types';
 import {
@@ -42,22 +41,6 @@ export class AudioEngine {
   private octaveJumpCandidateFrames = 0;
   private wasPreviouslySilent = true;
   private prevEmittedMidi = 60;
-
-  // Simulator nodes
-  private simMasterGain: GainNode | null = null;
-  private simPrimaryOsc: OscillatorNode | null = null;
-  private simPrimaryFilter: BiquadFilterNode | null = null;
-  private simPrimaryGain: GainNode | null = null;
-  private simVibratoOsc: OscillatorNode | null = null;
-  private simVibratoGain: GainNode | null = null;
-
-  private simNoiseSource: AudioBufferSourceNode | null = null;
-  private simNoiseFilter: BiquadFilterNode | null = null;
-  private simNoiseGain: GainNode | null = null;
-
-  private simSecondaryOsc: OscillatorNode | null = null;
-  private simSecondaryFilter: BiquadFilterNode | null = null;
-  private simSecondaryGain: GainNode | null = null;
 
   // Analysis buffers
   private timeDomainBuf: Float32Array<ArrayBuffer> = new Float32Array(4096);
@@ -208,8 +191,6 @@ export class AudioEngine {
       this.inputBus.connect(this.recorderNode);
       this.recorderNode.connect(this.silentSink);
       this.silentSink.connect(this.ctx.destination);
-
-      this.setupSimulatorNodes(this.ctx);
     }
 
     if (this.ctx.state === 'suspended') {
@@ -217,92 +198,6 @@ export class AudioEngine {
     }
 
     return this.ctx;
-  }
-
-  private setupSimulatorNodes(ctx: AudioContext): void {
-    if (!this.inputBus) return;
-
-    this.simMasterGain = ctx.createGain();
-    this.simMasterGain.gain.value = 0;
-
-    this.monitorGain = ctx.createGain();
-    this.monitorGain.gain.value = 0.18;
-
-    this.simMasterGain.connect(this.inputBus);
-    this.simMasterGain.connect(this.monitorGain);
-    this.monitorGain.connect(ctx.destination);
-
-    // 1. Primary bowed string synth
-    this.simPrimaryOsc = ctx.createOscillator();
-    this.simPrimaryOsc.type = 'sawtooth';
-    this.simPrimaryOsc.frequency.value = midiToFreq(this.instrument.strings[2].midi, this.refA4);
-
-    this.simVibratoOsc = ctx.createOscillator();
-    this.simVibratoOsc.type = 'sine';
-    this.simVibratoOsc.frequency.value = 5.6;
-
-    this.simVibratoGain = ctx.createGain();
-    this.simVibratoGain.gain.value = 0;
-    this.simVibratoOsc.connect(this.simVibratoGain);
-    this.simVibratoGain.connect(this.simPrimaryOsc.frequency);
-
-    this.simPrimaryFilter = ctx.createBiquadFilter();
-    this.simPrimaryFilter.type = 'lowpass';
-    this.simPrimaryFilter.frequency.value = 3600;
-    this.simPrimaryFilter.Q.value = 1.2;
-
-    this.simPrimaryGain = ctx.createGain();
-    this.simPrimaryGain.gain.value = 0.35;
-
-    this.simPrimaryOsc.connect(this.simPrimaryFilter);
-    this.simPrimaryFilter.connect(this.simPrimaryGain);
-    this.simPrimaryGain.connect(this.simMasterGain);
-
-    // 2. Bow noise / rosin scratch generator
-    const noiseLen = ctx.sampleRate * 3;
-    const noiseBuffer = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
-    const noiseData = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < noiseLen; i++) {
-      const mod = 0.75 + 0.25 * Math.sin(i * 0.013) * Math.cos(i * 0.0037);
-      noiseData[i] = (Math.random() * 2 - 1) * mod;
-    }
-
-    this.simNoiseSource = ctx.createBufferSource();
-    this.simNoiseSource.buffer = noiseBuffer;
-    this.simNoiseSource.loop = true;
-
-    this.simNoiseFilter = ctx.createBiquadFilter();
-    this.simNoiseFilter.type = 'bandpass';
-    this.simNoiseFilter.frequency.value = 2100;
-    this.simNoiseFilter.Q.value = 0.55;
-
-    this.simNoiseGain = ctx.createGain();
-    this.simNoiseGain.gain.value = 0;
-
-    this.simNoiseSource.connect(this.simNoiseFilter);
-    this.simNoiseFilter.connect(this.simNoiseGain);
-    this.simNoiseGain.connect(this.simMasterGain);
-
-    // 3. Secondary open-string leak oscillator
-    this.simSecondaryOsc = ctx.createOscillator();
-    this.simSecondaryOsc.type = 'sawtooth';
-    this.simSecondaryOsc.frequency.value = midiToFreq(this.instrument.strings[1].midi, this.refA4);
-
-    this.simSecondaryFilter = ctx.createBiquadFilter();
-    this.simSecondaryFilter.type = 'lowpass';
-    this.simSecondaryFilter.frequency.value = 2800;
-
-    this.simSecondaryGain = ctx.createGain();
-    this.simSecondaryGain.gain.value = 0;
-
-    this.simSecondaryOsc.connect(this.simSecondaryFilter);
-    this.simSecondaryFilter.connect(this.simSecondaryGain);
-    this.simSecondaryGain.connect(this.simMasterGain);
-
-    this.simPrimaryOsc.start();
-    this.simVibratoOsc.start();
-    this.simNoiseSource.start();
-    this.simSecondaryOsc.start();
   }
 
   public async enableMicrophone(): Promise<boolean> {
@@ -381,64 +276,7 @@ export class AudioEngine {
     this.micActive = false;
   }
 
-  public updateSimulatorAudio(sim: SimulatorState): void {
-    if (!this.ctx || !this.simMasterGain) return;
-    const now = this.ctx.currentTime;
-
-    const shouldPlay = sim.enabled && sim.playing && this.isRecordingBuffer && !this.isReplaying;
-    this.simMasterGain.gain.setTargetAtTime(shouldPlay ? 1.0 : 0.0, now, 0.015);
-
-    if (this.monitorGain) {
-      const vol = sim.monitorAudible ? (sim.monitorVolume / 100) * 0.25 : 0;
-      this.monitorGain.gain.setTargetAtTime(vol, now, 0.02);
-    }
-
-    if (!sim.enabled) return;
-
-    const exactMidi = sim.targetMidi + sim.centsOffset / 100;
-    const primaryFreq = midiToFreq(exactMidi, this.refA4);
-
-    if (this.simPrimaryOsc) {
-      const scratchJitter =
-        sim.bowNoise > 35
-          ? (Math.random() - 0.5) * ((sim.bowNoise - 35) / 65) * (primaryFreq * 0.004)
-          : 0;
-      this.simPrimaryOsc.frequency.setTargetAtTime(
-        Math.max(25, primaryFreq + scratchJitter),
-        now,
-        0.012
-      );
-    }
-
-    if (this.simVibratoGain) {
-      const vibHz = primaryFreq * (Math.pow(2, sim.vibrato / 1200) - 1);
-      this.simVibratoGain.gain.setTargetAtTime(vibHz, now, 0.02);
-    }
-
-    if (this.simNoiseGain && this.simPrimaryFilter) {
-      const noiseNorm = Math.max(0, Math.min(1, sim.bowNoise / 100));
-      const noiseGainVal = Math.pow(noiseNorm, 1.25) * 0.48;
-      this.simNoiseGain.gain.setTargetAtTime(noiseGainVal, now, 0.015);
-
-      const cutoff = 3200 + noiseNorm * 4500;
-      this.simPrimaryFilter.frequency.setTargetAtTime(cutoff, now, 0.02);
-    }
-
-    if (this.simSecondaryOsc && this.simSecondaryGain) {
-      const leakNorm = Math.max(0, Math.min(1, sim.secondStringLeak / 100));
-      const secStringIdx =
-        sim.secondStringIndex >= 0 && sim.secondStringIndex < 4
-          ? sim.secondStringIndex
-          : getAdjacentOpenStringIndex(this.instrument, sim.targetMidi);
-      const secString = this.instrument.strings[secStringIdx];
-      const secFreq = midiToFreq(secString.midi, this.refA4);
-
-      this.simSecondaryOsc.frequency.setTargetAtTime(secFreq, now, 0.015);
-      this.simSecondaryGain.gain.setTargetAtTime(leakNorm * 0.3, now, 0.015);
-    }
-  }
-
-  public sampleLiveFrame(sessionTime: number, sim: SimulatorState): TelemetryFrame {
+  public sampleLiveFrame(sessionTime: number): TelemetryFrame {
     this.latestSessionTime = sessionTime;
 
     if (!this.ctx || !this.analyser) {
@@ -576,29 +414,12 @@ export class AudioEngine {
     this.wasPreviouslySilent = isSilent;
     this.prevEmittedMidi = activeMidi;
 
-    let targetNoisiness = specRes.noisiness;
-    if (sim.enabled && !isSilent) {
-      const simNoise = sim.bowNoise / 100;
-      targetNoisiness = specRes.noisiness * 0.45 + simNoise * 0.55;
-    }
+    const targetNoisiness = specRes.noisiness;
     this.smoothedNoisiness += (targetNoisiness - this.smoothedNoisiness) * 0.3;
 
-    let secondaryMidi = isSilent ? null : specRes.secondaryMidi;
-    let secondaryRms = isSilent ? 0 : specRes.secondaryRms;
-    let secondaryStringIndex = isSilent ? null : specRes.secondaryStringIndex;
-
-    if (sim.enabled && !isSilent && sim.secondStringLeak > 4) {
-      const idx =
-        sim.secondStringIndex >= 0 && sim.secondStringIndex < 4
-          ? sim.secondStringIndex
-          : getAdjacentOpenStringIndex(this.instrument, Math.round(activeMidi));
-      const str = this.instrument.strings[idx];
-      if (Math.abs(activeMidi - str.midi) > 0.8) {
-        secondaryMidi = str.midi;
-        secondaryRms = Math.max(secondaryRms, sim.secondStringLeak / 100);
-        secondaryStringIndex = idx;
-      }
-    }
+    const secondaryMidi = isSilent ? null : specRes.secondaryMidi;
+    const secondaryRms = isSilent ? 0 : specRes.secondaryRms;
+    const secondaryStringIndex = isSilent ? null : specRes.secondaryStringIndex;
 
     const nearestMidi = Math.round(activeMidi);
     const centsOffset = (activeMidi - nearestMidi) * 100;

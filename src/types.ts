@@ -109,18 +109,3 @@ export function getDefaultFilterSettings(instrumentId: InstrumentId): FilterSett
     cameraDampingEnabled: true,
   };
 }
-
-export interface SimulatorState {
-  enabled: boolean;
-  drawerOpen: boolean;
-  playing: boolean; // Play / Silence toggle (tests 90-95% transparent ghost thread)
-  targetMidi: number; // integer MIDI note
-  centsOffset: number; // -50 to +50 cents
-  bowNoise: number; // 0 to 100%
-  secondStringLeak: number; // 0 to 100%
-  secondStringIndex: number; // -1 = auto adjacent open string, 0..3 = specific open string
-  vibrato: number; // 0 to 25 cents
-  autoMode: 'manual' | 'scale' | 'open-strings' | 'etude';
-  monitorAudible: boolean; // whether to play simulator audio to speakers (analyzer always receives it)
-  monitorVolume: number; // 0..100
-}
