@@ -1,4 +1,6 @@
 import {
+  FilterSettings,
+  getDefaultFilterSettings,
   GridMode,
   InstrumentId,
   InstrumentSpec,
@@ -57,9 +59,12 @@ class StringsVisualCoachApp {
   private rafId: number | null = null;
 
   // Built-in Interactive Simulator state
+  private activeDrawerTab: 'filters' | 'simulator' = 'filters';
+  private filterSettings: FilterSettings;
+
   private simulator: SimulatorState = {
     enabled: true,
-    drawerOpen: true,
+    drawerOpen: false,
     playing: true,
     targetMidi: 69, // A4 (Ля4)
     centsOffset: 0,
@@ -87,6 +92,8 @@ class StringsVisualCoachApp {
   constructor(root: HTMLElement) {
     this.root = root;
     this.audioEngine = new AudioEngine(this.selectedInstrument, this.refA4);
+    this.filterSettings = getDefaultFilterSettings(this.selectedInstrument.id);
+    this.audioEngine.setFilterSettings(this.filterSettings);
 
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
@@ -323,8 +330,28 @@ class StringsVisualCoachApp {
             <span class="readout-noise-badge" id="readout-status">Шум: 5%</span>
           </div>
 
-          <!-- RIGHT GROUP: ICON-ONLY MICROPHONE BUTTON (Always visible) -->
+          <!-- RIGHT GROUP: CONTROLS & MICROPHONE -->
           <div class="top-bar-group top-right-controls">
+            <button
+              type="button"
+              id="btn-filter-toggle"
+              class="btn-ui btn-icon-with-text ${this.activeDrawerTab === 'filters' && this.simulator.drawerOpen ? 'active' : ''}"
+              title="Фильтры звука и шумоподавление микрофона"
+              aria-label="Фильтры"
+            >
+              <span>🎛️</span>
+              <span class="btn-text-label">Фильтры</span>
+            </button>
+            <button
+              type="button"
+              id="btn-sim-toggle"
+              class="btn-ui btn-icon-with-text ${this.activeDrawerTab === 'simulator' && this.simulator.drawerOpen ? 'active' : ''}"
+              title="Открыть DSP-симулятор смычка"
+              aria-label="Симулятор"
+            >
+              <span>🎻</span>
+              <span class="btn-text-label">Симулятор</span>
+            </button>
             <button
               type="button"
               id="btn-mic-toggle"
@@ -337,31 +364,35 @@ class StringsVisualCoachApp {
           </div>
         </header>
 
-        <!-- DSP SIMULATOR DRAWER -->
+        <!-- DSP DRAWER (FILTERS & SIMULATOR TABS) -->
         <aside
           class="sim-drawer ${this.simulator.drawerOpen ? '' : 'drawer-collapsed'}"
           id="sim-drawer"
-          aria-label="DSP-Симулятор"
+          aria-label="Панель DSP"
         >
           <div class="sim-drawer-header">
-            <button
-              type="button"
-              id="btn-sim-collapse"
-              class="sim-collapse-trigger"
-              aria-expanded="${this.simulator.drawerOpen ? 'true' : 'false'}"
-              aria-controls="sim-drawer-body"
-              title="Свернуть / развернуть DSP-Симулятор"
-            >
-              <span class="sim-collapse-arrow" id="sim-collapse-arrow">${this.simulator.drawerOpen ? '▾' : '▸'}</span>
-              <span>DSP-Симулятор</span>
-            </button>
+            <div class="drawer-tabs">
+              <button
+                type="button"
+                id="tab-btn-filters"
+                class="drawer-tab-btn ${this.activeDrawerTab === 'filters' ? 'active' : ''}"
+                title="Настройки фильтров микрофона для реальной игры"
+              >🎛️ Фильтры</button>
+              <button
+                type="button"
+                id="tab-btn-simulator"
+                class="drawer-tab-btn ${this.activeDrawerTab === 'simulator' ? 'active' : ''}"
+                title="Встроенный симулятор инструмента"
+              >🎻 Симулятор</button>
+            </div>
 
             <div class="sim-header-actions">
               <button
                 type="button"
                 id="btn-sim-play-silence"
                 class="sim-icon-btn ${this.simulator.playing && this.simulator.enabled ? 'playing' : 'paused'}"
-                title="Play / Pause симулятора (проверка призрачной нити)"
+                style="${this.activeDrawerTab === 'simulator' ? '' : 'display:none;'}"
+                title="Play / Pause симулятора"
                 aria-label="Play / Pause симулятора"
               >
                 ${this.simulator.playing && this.simulator.enabled ? PAUSE_SVG_ICON : PLAY_SVG_ICON}
@@ -370,10 +401,20 @@ class StringsVisualCoachApp {
                 type="button"
                 id="btn-sim-speaker"
                 class="sim-icon-btn ${this.simulator.monitorAudible ? 'speaker-on' : ''}"
-                title="Звук симулятора в динамики Вкл / Выкл"
+                style="${this.activeDrawerTab === 'simulator' ? '' : 'display:none;'}"
+                title="Звук симулятора в динамики"
                 aria-label="Звук симулятора в динамики"
               >
                 ${this.simulator.monitorAudible ? '🔊' : '🔇'}
+              </button>
+              <button
+                type="button"
+                id="btn-drawer-close"
+                class="sim-icon-btn"
+                title="Закрыть панель"
+                aria-label="Закрыть панель"
+              >
+                ✕
               </button>
             </div>
           </div>
@@ -383,89 +424,8 @@ class StringsVisualCoachApp {
             class="sim-drawer-body ${this.simulator.drawerOpen ? '' : 'is-collapsed'}"
             ${this.simulator.drawerOpen ? '' : 'hidden'}
           >
-            <div class="sim-drawer-inner">
-              <!-- Compact Mode Buttons (no redundant headers or labels) -->
-              <div class="sim-controls-inline">
-                <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'etude' ? 'active' : ''}" data-sim-mode="etude">Авто-этюд</button>
-                <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'scale' ? 'active' : ''}" data-sim-mode="scale">Гамма</button>
-                <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'open-strings' ? 'active' : ''}" data-sim-mode="open-strings">Струны</button>
-                <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'manual' ? 'active' : ''}" data-sim-mode="manual">Ручной</button>
-              </div>
-
-              <!-- Target Note & Open String Quick Buttons -->
-              <div class="sim-row">
-                <div class="sim-row-header">
-                  <label for="sim-target-note">Нота:</label>
-                  <div class="sim-controls-inline">
-                    ${inst.strings
-                      .map(
-                        (s) => `
-                      <button
-                        type="button"
-                        class="sim-preset-btn"
-                        data-quick-midi="${s.midi}"
-                        style="border-color:${s.color};color:#F8FAFC;"
-                      >${s.roman}:${s.nameRu}</button>
-                    `
-                      )
-                      .join('')}
-                  </div>
-                </div>
-                <select id="sim-target-note" class="select-ui" style="max-width:100%;">
-                  ${noteOptionsHtml.join('')}
-                </select>
-              </div>
-
-              <!-- Cents Offset Slider (-50 to +50) -->
-              <div class="sim-row">
-                <div class="sim-row-header">
-                  <label for="sim-cents-slider">Интонация (Cents):</label>
-                  <span class="sim-row-val" id="sim-cents-val">${this.formatCents(this.simulator.centsOffset)}</span>
-                </div>
-                <input
-                  type="range"
-                  id="sim-cents-slider"
-                  class="sim-slider"
-                  min="-50"
-                  max="50"
-                  step="1"
-                  value="${this.simulator.centsOffset}"
-                />
-              </div>
-
-              <!-- Bow Noise / Scratch Slider (0% to 100%) -->
-              <div class="sim-row">
-                <div class="sim-row-header">
-                  <label for="sim-noise-slider">Шум смычка (Blur):</label>
-                  <span class="sim-row-val" id="sim-noise-val">${Math.round(this.simulator.bowNoise)}%</span>
-                </div>
-                <input
-                  type="range"
-                  id="sim-noise-slider"
-                  class="sim-slider"
-                  min="0"
-                  max="100"
-                  step="1"
-                  value="${Math.round(this.simulator.bowNoise)}"
-                />
-              </div>
-
-              <!-- Adjacent Open String Leak Slider (0% to 100%) -->
-              <div class="sim-row">
-                <div class="sim-row-header">
-                  <label for="sim-leak-slider">2-я открытая струна:</label>
-                  <span class="sim-row-val" id="sim-leak-val">${Math.round(this.simulator.secondStringLeak)}%</span>
-                </div>
-                <input
-                  type="range"
-                  id="sim-leak-slider"
-                  class="sim-slider"
-                  min="0"
-                  max="100"
-                  step="1"
-                  value="${Math.round(this.simulator.secondStringLeak)}"
-                />
-              </div>
+            <div class="sim-drawer-inner" id="drawer-inner-content">
+              ${this.activeDrawerTab === 'filters' ? this.getFiltersTabHtml() : this.getSimulatorTabHtml(inst, noteOptionsHtml)}
             </div>
           </div>
         </aside>
@@ -546,6 +506,259 @@ class StringsVisualCoachApp {
     return r > 0 ? `+${r}¢` : `${r}¢`;
   }
 
+  private getNoteOptionsHtml(inst: InstrumentSpec): string[] {
+    const noteOptionsHtml: string[] = [];
+    for (let m = inst.minMidi; m <= inst.maxMidi; m++) {
+      const isSelected = m === this.simulator.targetMidi;
+      const label = `${formatMidiNoteRu(m, this.gridMode)} (MIDI ${m})`;
+      noteOptionsHtml.push(
+        `<option value="${m}" ${isSelected ? 'selected' : ''}>${label}</option>`
+      );
+    }
+    return noteOptionsHtml;
+  }
+
+  private getFiltersTabHtml(): string {
+    const s = this.filterSettings;
+    const gateRmsPct = Math.min(100, Math.max(0, (s.noiseGateRms / 0.08) * 100));
+    const clarityPct = Math.min(100, Math.max(0, s.clarityThreshold * 100));
+
+    return `
+      <!-- LIVE SIGNAL METERS -->
+      <div class="filter-meter-card">
+        <div class="meter-header">
+          <span>Громкость микрофона (RMS):</span>
+          <span class="meter-val" id="meter-rms-val">${this.audioEngine.latestRawRms.toFixed(3)}</span>
+        </div>
+        <div class="meter-bar-track">
+          <div class="meter-bar-fill" id="meter-rms-fill" style="width:0%;"></div>
+          <div class="meter-threshold-line" id="meter-rms-thresh-line" style="left:${gateRmsPct.toFixed(1)}%;" title="Порог Noise Gate"></div>
+        </div>
+        <div class="meter-subtext">
+          <span id="meter-status-badge" class="badge-status-silent">⚪ Ниже порога (тишина)</span>
+        </div>
+      </div>
+
+      <div class="filter-meter-card">
+        <div class="meter-header">
+          <span>Чистота тона (Clarity):</span>
+          <span class="meter-val" id="meter-clarity-val">${Math.round(this.audioEngine.latestRawClarity * 100)}%</span>
+        </div>
+        <div class="meter-bar-track">
+          <div class="meter-bar-fill meter-clarity-fill" id="meter-clarity-fill" style="width:0%;"></div>
+          <div class="meter-threshold-line" id="meter-clarity-thresh-line" style="left:${clarityPct.toFixed(1)}%;" title="Порог уверенности"></div>
+        </div>
+      </div>
+
+      <!-- 1. NOISE GATE -->
+      <div class="filter-section-title">1. Отсечение шума</div>
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label class="toggle-label">
+            <input type="checkbox" id="chk-noise-gate" ${s.noiseGateEnabled ? 'checked' : ''} />
+            <span>Noise Gate (порог RMS):</span>
+          </label>
+          <span class="sim-row-val" id="val-noise-gate">${s.noiseGateRms.toFixed(3)}</span>
+        </div>
+        <input
+          type="range"
+          id="slider-noise-gate"
+          class="sim-slider"
+          min="0.005"
+          max="0.080"
+          step="0.002"
+          value="${s.noiseGateRms}"
+        />
+      </div>
+
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label for="slider-clarity">Порог чистоты (Clarity):</label>
+          <span class="sim-row-val" id="val-clarity">${Math.round(s.clarityThreshold * 100)}%</span>
+        </div>
+        <input
+          type="range"
+          id="slider-clarity"
+          class="sim-slider"
+          min="0.30"
+          max="0.85"
+          step="0.02"
+          value="${s.clarityThreshold}"
+        />
+      </div>
+
+      <!-- 2. BANDPASS FREQUENCY CUTOFFS -->
+      <div class="filter-section-title">2. Срез частот инструмента</div>
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label class="toggle-label">
+            <input type="checkbox" id="chk-highpass" ${s.highPassEnabled ? 'checked' : ''} />
+            <span>High-Pass (срез гула/речи):</span>
+          </label>
+          <span class="sim-row-val" id="val-highpass">${s.highPassFreq} Гц</span>
+        </div>
+        <input
+          type="range"
+          id="slider-highpass"
+          class="sim-slider"
+          min="30"
+          max="350"
+          step="5"
+          value="${s.highPassFreq}"
+        />
+      </div>
+
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label class="toggle-label">
+            <input type="checkbox" id="chk-lowpass" ${s.lowPassEnabled ? 'checked' : ''} />
+            <span>Low-Pass (срез шипения):</span>
+          </label>
+          <span class="sim-row-val" id="val-lowpass">${s.lowPassFreq} Гц</span>
+        </div>
+        <input
+          type="range"
+          id="slider-lowpass"
+          class="sim-slider"
+          min="1500"
+          max="8000"
+          step="100"
+          value="${s.lowPassFreq}"
+        />
+      </div>
+
+      <!-- 3. OCTAVE REJECTION & STABILITY -->
+      <div class="filter-section-title">3. Защита от скачков & Стабильность</div>
+      <div class="sim-row">
+        <label class="toggle-label">
+          <input type="checkbox" id="chk-octave-rejection" ${s.octaveJumpRejection ? 'checked' : ''} />
+          <span>Подавление октавных удвоений</span>
+        </label>
+      </div>
+
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label>Медианный фильтр:</label>
+          <div class="sim-controls-inline">
+            <button type="button" class="sim-preset-btn ${s.medianFilterFrames === 1 ? 'active' : ''}" data-median="1">Выкл</button>
+            <button type="button" class="sim-preset-btn ${s.medianFilterFrames === 3 ? 'active' : ''}" data-median="3">3 кадра</button>
+            <button type="button" class="sim-preset-btn ${s.medianFilterFrames === 5 ? 'active' : ''}" data-median="5">5 кадров</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sim-row">
+        <label class="toggle-label">
+          <input type="checkbox" id="chk-break-leap" ${s.breakLineOnLeap ? 'checked' : ''} />
+          <span>Разрыв линий при скачках (без полос)</span>
+        </label>
+      </div>
+
+      <div class="sim-row">
+        <label class="toggle-label">
+          <input type="checkbox" id="chk-camera-damping" ${s.cameraDampingEnabled ? 'checked' : ''} />
+          <span>Плавность камеры (без рывков)</span>
+        </label>
+      </div>
+
+      <!-- 4. QUICK PRESETS -->
+      <div class="filter-section-title">4. Готовые пресеты</div>
+      <div class="sim-controls-inline" style="margin-top:2px;">
+        <button type="button" class="sim-preset-btn" id="btn-preset-default">Базовый</button>
+        <button type="button" class="sim-preset-btn" id="btn-preset-quiet">Тихая игра</button>
+        <button type="button" class="sim-preset-btn" id="btn-preset-noisy">Шумная комната</button>
+        <button type="button" class="sim-preset-btn" id="btn-preset-raw">Без фильтров</button>
+      </div>
+    `;
+  }
+
+  private getSimulatorTabHtml(inst: InstrumentSpec, noteOptionsHtml: string[]): string {
+    return `
+      <!-- Compact Mode Buttons -->
+      <div class="sim-controls-inline">
+        <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'etude' ? 'active' : ''}" data-sim-mode="etude">Авто-этюд</button>
+        <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'scale' ? 'active' : ''}" data-sim-mode="scale">Гамма</button>
+        <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'open-strings' ? 'active' : ''}" data-sim-mode="open-strings">Струны</button>
+        <button type="button" class="sim-preset-btn ${this.simulator.autoMode === 'manual' ? 'active' : ''}" data-sim-mode="manual">Ручной</button>
+      </div>
+
+      <!-- Target Note & Open String Quick Buttons -->
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label for="sim-target-note">Нота:</label>
+          <div class="sim-controls-inline">
+            ${inst.strings
+              .map(
+                (s) => `
+              <button
+                type="button"
+                class="sim-preset-btn"
+                data-quick-midi="${s.midi}"
+                style="border-color:${s.color};color:#F8FAFC;"
+              >${s.roman}:${s.nameRu}</button>
+            `
+              )
+              .join('')}
+          </div>
+        </div>
+        <select id="sim-target-note" class="select-ui" style="max-width:100%;">
+          ${noteOptionsHtml.join('')}
+        </select>
+      </div>
+
+      <!-- Cents Offset Slider (-50 to +50) -->
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label for="sim-cents-slider">Интонация (Cents):</label>
+          <span class="sim-row-val" id="sim-cents-val">${this.formatCents(this.simulator.centsOffset)}</span>
+        </div>
+        <input
+          type="range"
+          id="sim-cents-slider"
+          class="sim-slider"
+          min="-50"
+          max="50"
+          step="1"
+          value="${this.simulator.centsOffset}"
+        />
+      </div>
+
+      <!-- Bow Noise / Scratch Slider (0% to 100%) -->
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label for="sim-noise-slider">Шум смычка (Blur):</label>
+          <span class="sim-row-val" id="sim-noise-val">${Math.round(this.simulator.bowNoise)}%</span>
+        </div>
+        <input
+          type="range"
+          id="sim-noise-slider"
+          class="sim-slider"
+          min="0"
+          max="100"
+          step="1"
+          value="${Math.round(this.simulator.bowNoise)}"
+        />
+      </div>
+
+      <!-- Adjacent Open String Leak Slider (0% to 100%) -->
+      <div class="sim-row">
+        <div class="sim-row-header">
+          <label for="sim-leak-slider">2-я открытая струна:</label>
+          <span class="sim-row-val" id="sim-leak-val">${Math.round(this.simulator.secondStringLeak)}%</span>
+        </div>
+        <input
+          type="range"
+          id="sim-leak-slider"
+          class="sim-slider"
+          min="0"
+          max="100"
+          step="1"
+          value="${Math.round(this.simulator.secondStringLeak)}"
+        />
+      </div>
+    `;
+  }
+
   private bindLiveScreenEvents(canvas: HTMLCanvasElement): void {
     // 1. Back to Instrument Selection (Screen 1)
     const backBtn = this.root.querySelector<HTMLButtonElement>('#btn-back-setup');
@@ -560,7 +773,7 @@ class StringsVisualCoachApp {
       this.gridMode = gridSelect.value as GridMode;
     });
 
-    // 3. Icon-Only Microphone Toggle (Always accessible on phones/tablets)
+    // 3. Icon-Only Microphone Toggle
     const micBtn = this.root.querySelector<HTMLButtonElement>('#btn-mic-toggle');
     micBtn?.addEventListener('click', async () => {
       if (this.audioEngine.micActive) {
@@ -568,7 +781,6 @@ class StringsVisualCoachApp {
         micBtn.classList.remove('active-mic', 'error-mic');
         micBtn.title = 'Включить микрофон';
       } else {
-        // Pause simulator synthesis so microphone input is clean, and collapse simulator drawer on mobile
         this.simulator.enabled = false;
         this.simulator.playing = false;
         const ok = await this.audioEngine.enableMicrophone();
@@ -576,10 +788,6 @@ class StringsVisualCoachApp {
           micBtn.classList.remove('error-mic');
           micBtn.classList.add('active-mic');
           micBtn.title = 'Микрофон включён (нажмите, чтобы выключить)';
-          if (window.innerWidth < 780) {
-            this.setDrawerOpen(false);
-          }
-          // Ensure recording is active when user turns on microphone
           if (this.isPaused) {
             this.startRecording();
           }
@@ -591,104 +799,45 @@ class StringsVisualCoachApp {
       }
     });
 
-    // 4. Simulator Drawer Collapse Toggle (Arrow at start of header)
-    const simCollapseBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-collapse');
-    const simDrawerBody = this.root.querySelector<HTMLElement>('#sim-drawer-body');
+    // 4. Tab / Drawer Toggles
+    const filterToggleBtn = this.root.querySelector<HTMLButtonElement>('#btn-filter-toggle');
+    filterToggleBtn?.addEventListener('click', () => {
+      this.openDrawerTab('filters');
+    });
 
+    const simToggleBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-toggle');
+    simToggleBtn?.addEventListener('click', () => {
+      this.openDrawerTab('simulator');
+    });
+
+    const tabFiltersBtn = this.root.querySelector<HTMLButtonElement>('#tab-btn-filters');
+    tabFiltersBtn?.addEventListener('click', () => {
+      this.switchDrawerTab('filters');
+    });
+
+    const tabSimBtn = this.root.querySelector<HTMLButtonElement>('#tab-btn-simulator');
+    tabSimBtn?.addEventListener('click', () => {
+      this.switchDrawerTab('simulator');
+    });
+
+    const drawerCloseBtn = this.root.querySelector<HTMLButtonElement>('#btn-drawer-close');
+    drawerCloseBtn?.addEventListener('click', () => {
+      this.setDrawerOpen(false);
+    });
+
+    const simDrawerBody = this.root.querySelector<HTMLElement>('#sim-drawer-body');
     simDrawerBody?.addEventListener('transitionend', (e: TransitionEvent) => {
       if (e.propertyName === 'block-size' && simDrawerBody.classList.contains('is-collapsed')) {
         simDrawerBody.hidden = true;
       }
     });
 
-    simCollapseBtn?.addEventListener('click', () => {
-      this.setDrawerOpen(!this.simulator.drawerOpen);
-    });
-
-    // 5. Simulator Speaker Monitor Toggle
-    const speakerBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-speaker');
-    speakerBtn?.addEventListener('click', async () => {
-      await this.audioEngine.ensureContext();
-      this.simulator.monitorAudible = !this.simulator.monitorAudible;
-      this.syncSimulatorUI();
-    });
-
-    // 6. Simulator Play / Pause Icon Button
-    const playSilenceBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-play-silence');
-    playSilenceBtn?.addEventListener('click', async () => {
-      await this.audioEngine.ensureContext();
-      if (!this.simulator.enabled) {
-        this.simulator.enabled = true;
-        this.simulator.playing = true;
-      } else {
-        this.simulator.playing = !this.simulator.playing;
-      }
-      if (!this.simulator.playing) {
-        this.simulator.autoMode = 'manual';
-      }
-      this.syncSimulatorUI();
-    });
-
-    // 7. Simulator Mode Preset Buttons
-    this.root.querySelectorAll<HTMLButtonElement>('[data-sim-mode]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await this.audioEngine.ensureContext();
-        const mode = btn.dataset.simMode as SimulatorState['autoMode'];
-        this.simulator.enabled = true;
-        this.simulator.autoMode = mode;
-        this.simulator.playing = true;
-        this.autoPhaseTime = 0;
-        this.syncSimulatorUI();
-      });
-    });
-
-    // 8. Quick Open String Buttons
-    this.root.querySelectorAll<HTMLButtonElement>('[data-quick-midi]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await this.audioEngine.ensureContext();
-        this.simulator.enabled = true;
-        this.simulator.autoMode = 'manual';
-        this.simulator.playing = true;
-        this.simulator.targetMidi = Number(btn.dataset.quickMidi);
-        this.simulator.centsOffset = 0;
-        this.syncSimulatorUI();
-      });
-    });
-
-    // 9. Target Note Select
-    const targetNoteSelect = this.root.querySelector<HTMLSelectElement>('#sim-target-note');
-    targetNoteSelect?.addEventListener('change', async () => {
-      await this.audioEngine.ensureContext();
-      this.simulator.enabled = true;
-      this.simulator.autoMode = 'manual';
-      this.simulator.targetMidi = Number(targetNoteSelect.value);
-      this.syncSimulatorUI();
-    });
-
-    // 10. Simulator Sliders
-    const centsSlider = this.root.querySelector<HTMLInputElement>('#sim-cents-slider');
-    centsSlider?.addEventListener('input', () => {
-      this.simulator.enabled = true;
-      this.simulator.autoMode = 'manual';
-      this.simulator.centsOffset = Number(centsSlider.value);
-      this.syncSimulatorUI();
-    });
-
-    const noiseSlider = this.root.querySelector<HTMLInputElement>('#sim-noise-slider');
-    noiseSlider?.addEventListener('input', () => {
-      this.simulator.enabled = true;
-      this.simulator.autoMode = 'manual';
-      this.simulator.bowNoise = Number(noiseSlider.value);
-      this.syncSimulatorUI();
-    });
-
-    const leakSlider = this.root.querySelector<HTMLInputElement>('#sim-leak-slider');
-    leakSlider?.addEventListener('input', () => {
-      this.simulator.enabled = true;
-      this.simulator.autoMode = 'manual';
-      this.simulator.secondStringLeak = Number(leakSlider.value);
-      this.syncSimulatorUI();
-    });
+    // Initial binding of the active tab
+    if (this.activeDrawerTab === 'filters') {
+      this.bindFilterTabEvents();
+    } else {
+      this.bindSimulatorTabEvents();
+    }
 
     // 11. Bottom Bar: Main Record / Stop Button
     const recordStopBtn = this.root.querySelector<HTMLButtonElement>('#btn-record-stop');
@@ -829,8 +978,8 @@ class StringsVisualCoachApp {
     this.simulator.drawerOpen = open;
     const simDrawer = this.root.querySelector<HTMLElement>('#sim-drawer');
     const simDrawerBody = this.root.querySelector<HTMLElement>('#sim-drawer-body');
-    const simCollapseBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-collapse');
-    const arrowEl = this.root.querySelector<HTMLElement>('#sim-collapse-arrow');
+    const filterBtn = this.root.querySelector<HTMLButtonElement>('#btn-filter-toggle');
+    const simBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-toggle');
 
     simDrawer?.classList.toggle('drawer-collapsed', !open);
     if (simDrawerBody) {
@@ -842,10 +991,268 @@ class StringsVisualCoachApp {
         simDrawerBody.classList.add('is-collapsed');
       }
     }
-    simCollapseBtn?.setAttribute('aria-expanded', String(open));
-    if (arrowEl) {
-      arrowEl.textContent = open ? '▾' : '▸';
+    filterBtn?.classList.toggle('active', open && this.activeDrawerTab === 'filters');
+    simBtn?.classList.toggle('active', open && this.activeDrawerTab === 'simulator');
+  }
+
+  private openDrawerTab(tab: 'filters' | 'simulator'): void {
+    if (this.simulator.drawerOpen && this.activeDrawerTab === tab) {
+      this.setDrawerOpen(false);
+      return;
     }
+    this.activeDrawerTab = tab;
+    this.refreshDrawerContent();
+    this.setDrawerOpen(true);
+  }
+
+  private switchDrawerTab(tab: 'filters' | 'simulator'): void {
+    if (this.activeDrawerTab === tab) return;
+    this.activeDrawerTab = tab;
+    this.refreshDrawerContent();
+    if (!this.simulator.drawerOpen) {
+      this.setDrawerOpen(true);
+    }
+  }
+
+  private refreshDrawerContent(): void {
+    const contentEl = this.root.querySelector<HTMLElement>('#drawer-inner-content');
+    const tabFiltersBtn = this.root.querySelector<HTMLButtonElement>('#tab-btn-filters');
+    const tabSimBtn = this.root.querySelector<HTMLButtonElement>('#tab-btn-simulator');
+    const playSilenceBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-play-silence');
+    const speakerBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-speaker');
+    const filterToggleBtn = this.root.querySelector<HTMLButtonElement>('#btn-filter-toggle');
+    const simToggleBtn = this.root.querySelector<HTMLButtonElement>('#btn-sim-toggle');
+
+    tabFiltersBtn?.classList.toggle('active', this.activeDrawerTab === 'filters');
+    tabSimBtn?.classList.toggle('active', this.activeDrawerTab === 'simulator');
+    filterToggleBtn?.classList.toggle('active', this.simulator.drawerOpen && this.activeDrawerTab === 'filters');
+    simToggleBtn?.classList.toggle('active', this.simulator.drawerOpen && this.activeDrawerTab === 'simulator');
+
+    if (playSilenceBtn) playSilenceBtn.style.display = this.activeDrawerTab === 'simulator' ? '' : 'none';
+    if (speakerBtn) speakerBtn.style.display = this.activeDrawerTab === 'simulator' ? '' : 'none';
+
+    if (!contentEl) return;
+    if (this.activeDrawerTab === 'filters') {
+      contentEl.innerHTML = this.getFiltersTabHtml();
+      this.bindFilterTabEvents();
+    } else {
+      const inst = this.selectedInstrument;
+      const noteOptionsHtml = this.getNoteOptionsHtml(inst);
+      contentEl.innerHTML = this.getSimulatorTabHtml(inst, noteOptionsHtml);
+      this.bindSimulatorTabEvents();
+      this.syncSimulatorUI();
+    }
+  }
+
+  private bindFilterTabEvents(): void {
+    const chkGate = this.root.querySelector<HTMLInputElement>('#chk-noise-gate');
+    const sliderGate = this.root.querySelector<HTMLInputElement>('#slider-noise-gate');
+    const valGate = this.root.querySelector<HTMLElement>('#val-noise-gate');
+    const threshLine = this.root.querySelector<HTMLElement>('#meter-rms-thresh-line');
+
+    chkGate?.addEventListener('change', () => {
+      this.filterSettings.noiseGateEnabled = chkGate.checked;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    sliderGate?.addEventListener('input', () => {
+      const v = Number(sliderGate.value);
+      this.filterSettings.noiseGateRms = v;
+      if (valGate) valGate.textContent = v.toFixed(3);
+      if (threshLine) threshLine.style.left = `${Math.min(100, (v / 0.08) * 100).toFixed(1)}%`;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    const sliderClarity = this.root.querySelector<HTMLInputElement>('#slider-clarity');
+    const valClarity = this.root.querySelector<HTMLElement>('#val-clarity');
+    const clarityThreshLine = this.root.querySelector<HTMLElement>('#meter-clarity-thresh-line');
+
+    sliderClarity?.addEventListener('input', () => {
+      const v = Number(sliderClarity.value);
+      this.filterSettings.clarityThreshold = v;
+      if (valClarity) valClarity.textContent = `${Math.round(v * 100)}%`;
+      if (clarityThreshLine) clarityThreshLine.style.left = `${Math.min(100, v * 100).toFixed(1)}%`;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    const chkHighPass = this.root.querySelector<HTMLInputElement>('#chk-highpass');
+    const sliderHighPass = this.root.querySelector<HTMLInputElement>('#slider-highpass');
+    const valHighPass = this.root.querySelector<HTMLElement>('#val-highpass');
+
+    chkHighPass?.addEventListener('change', () => {
+      this.filterSettings.highPassEnabled = chkHighPass.checked;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    sliderHighPass?.addEventListener('input', () => {
+      const v = Number(sliderHighPass.value);
+      this.filterSettings.highPassFreq = v;
+      if (valHighPass) valHighPass.textContent = `${v} Гц`;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    const chkLowPass = this.root.querySelector<HTMLInputElement>('#chk-lowpass');
+    const sliderLowPass = this.root.querySelector<HTMLInputElement>('#slider-lowpass');
+    const valLowPass = this.root.querySelector<HTMLElement>('#val-lowpass');
+
+    chkLowPass?.addEventListener('change', () => {
+      this.filterSettings.lowPassEnabled = chkLowPass.checked;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    sliderLowPass?.addEventListener('input', () => {
+      const v = Number(sliderLowPass.value);
+      this.filterSettings.lowPassFreq = v;
+      if (valLowPass) valLowPass.textContent = `${v} Гц`;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    const chkOctave = this.root.querySelector<HTMLInputElement>('#chk-octave-rejection');
+    chkOctave?.addEventListener('change', () => {
+      this.filterSettings.octaveJumpRejection = chkOctave.checked;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-median]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const frames = Number(btn.dataset.median) as 1 | 3 | 5;
+        this.filterSettings.medianFilterFrames = frames;
+        this.root.querySelectorAll<HTMLButtonElement>('[data-median]').forEach((b) => {
+          b.classList.toggle('active', b.dataset.median === String(frames));
+        });
+        this.audioEngine.setFilterSettings(this.filterSettings);
+      });
+    });
+
+    const chkBreakLeap = this.root.querySelector<HTMLInputElement>('#chk-break-leap');
+    chkBreakLeap?.addEventListener('change', () => {
+      this.filterSettings.breakLineOnLeap = chkBreakLeap.checked;
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    const chkCameraDamping = this.root.querySelector<HTMLInputElement>('#chk-camera-damping');
+    chkCameraDamping?.addEventListener('change', () => {
+      this.filterSettings.cameraDampingEnabled = chkCameraDamping.checked;
+      if (this.renderer) {
+        this.renderer.cameraDampingEnabled = chkCameraDamping.checked;
+      }
+      this.audioEngine.setFilterSettings(this.filterSettings);
+    });
+
+    // Presets
+    const btnDefault = this.root.querySelector<HTMLButtonElement>('#btn-preset-default');
+    btnDefault?.addEventListener('click', () => {
+      this.filterSettings = getDefaultFilterSettings(this.selectedInstrument.id);
+      this.applyFilterPreset();
+    });
+
+    const btnQuiet = this.root.querySelector<HTMLButtonElement>('#btn-preset-quiet');
+    btnQuiet?.addEventListener('click', () => {
+      this.filterSettings = {
+        ...getDefaultFilterSettings(this.selectedInstrument.id),
+        noiseGateRms: 0.012,
+        clarityThreshold: 0.48,
+        medianFilterFrames: 3,
+      };
+      this.applyFilterPreset();
+    });
+
+    const btnNoisy = this.root.querySelector<HTMLButtonElement>('#btn-preset-noisy');
+    btnNoisy?.addEventListener('click', () => {
+      this.filterSettings = {
+        ...getDefaultFilterSettings(this.selectedInstrument.id),
+        noiseGateRms: 0.036,
+        clarityThreshold: 0.68,
+        medianFilterFrames: 5,
+      };
+      this.applyFilterPreset();
+    });
+
+    const btnRaw = this.root.querySelector<HTMLButtonElement>('#btn-preset-raw');
+    btnRaw?.addEventListener('click', () => {
+      this.filterSettings = {
+        ...this.filterSettings,
+        noiseGateEnabled: false,
+        highPassEnabled: false,
+        lowPassEnabled: false,
+        octaveJumpRejection: false,
+        medianFilterFrames: 1,
+        breakLineOnLeap: false,
+        cameraDampingEnabled: false,
+      };
+      this.applyFilterPreset();
+    });
+  }
+
+  private applyFilterPreset(): void {
+    this.audioEngine.setFilterSettings(this.filterSettings);
+    if (this.renderer) {
+      this.renderer.cameraDampingEnabled = this.filterSettings.cameraDampingEnabled;
+    }
+    const contentEl = this.root.querySelector<HTMLElement>('#drawer-inner-content');
+    if (contentEl) {
+      contentEl.innerHTML = this.getFiltersTabHtml();
+      this.bindFilterTabEvents();
+    }
+  }
+
+  private bindSimulatorTabEvents(): void {
+    this.root.querySelectorAll<HTMLButtonElement>('[data-sim-mode]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await this.audioEngine.ensureContext();
+        const mode = btn.dataset.simMode as SimulatorState['autoMode'];
+        this.simulator.enabled = true;
+        this.simulator.autoMode = mode;
+        this.simulator.playing = true;
+        this.autoPhaseTime = 0;
+        this.syncSimulatorUI();
+      });
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-quick-midi]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await this.audioEngine.ensureContext();
+        this.simulator.enabled = true;
+        this.simulator.autoMode = 'manual';
+        this.simulator.playing = true;
+        this.simulator.targetMidi = Number(btn.dataset.quickMidi);
+        this.simulator.centsOffset = 0;
+        this.syncSimulatorUI();
+      });
+    });
+
+    const targetNoteSelect = this.root.querySelector<HTMLSelectElement>('#sim-target-note');
+    targetNoteSelect?.addEventListener('change', async () => {
+      await this.audioEngine.ensureContext();
+      this.simulator.enabled = true;
+      this.simulator.autoMode = 'manual';
+      this.simulator.targetMidi = Number(targetNoteSelect.value);
+      this.syncSimulatorUI();
+    });
+
+    const centsSlider = this.root.querySelector<HTMLInputElement>('#sim-cents-slider');
+    centsSlider?.addEventListener('input', () => {
+      this.simulator.enabled = true;
+      this.simulator.autoMode = 'manual';
+      this.simulator.centsOffset = Number(centsSlider.value);
+      this.syncSimulatorUI();
+    });
+
+    const noiseSlider = this.root.querySelector<HTMLInputElement>('#sim-noise-slider');
+    noiseSlider?.addEventListener('input', () => {
+      this.simulator.enabled = true;
+      this.simulator.autoMode = 'manual';
+      this.simulator.bowNoise = Number(noiseSlider.value);
+      this.syncSimulatorUI();
+    });
+
+    const leakSlider = this.root.querySelector<HTMLInputElement>('#sim-leak-slider');
+    leakSlider?.addEventListener('input', () => {
+      this.simulator.enabled = true;
+      this.simulator.autoMode = 'manual';
+      this.simulator.secondStringLeak = Number(leakSlider.value);
+      this.syncSimulatorUI();
+    });
   }
 
   private startRecording(): void {
@@ -1083,6 +1490,7 @@ class StringsVisualCoachApp {
       this.scrubbedSessionTime = this.sessionClockSeconds;
       this.renderer?.updateCameraPhysics(latestFrame, dt, false);
       this.updateTopReadout(latestFrame);
+      this.updateFilterMetersUI();
       this.syncTransportUI();
     } else {
       this.audioEngine.updateSimulatorAudio({ ...this.simulator, playing: false });
@@ -1097,6 +1505,7 @@ class StringsVisualCoachApp {
       if (inspectedFrame) {
         this.updateTopReadout(inspectedFrame);
       }
+      this.updateFilterMetersUI();
       this.syncTransportUI();
     }
 
@@ -1147,6 +1556,55 @@ class StringsVisualCoachApp {
         statusEl.textContent = `2-я: ${secStr ? secStr.nameRu : ''} • Шум ${noisePct}%`;
       } else {
         statusEl.textContent = `Шум: ${noisePct}%`;
+      }
+    }
+  }
+
+  private updateFilterMetersUI(): void {
+    if (!this.simulator.drawerOpen || this.activeDrawerTab !== 'filters') return;
+
+    const rmsFill = this.root.querySelector<HTMLElement>('#meter-rms-fill');
+    const rmsVal = this.root.querySelector<HTMLElement>('#meter-rms-val');
+    const clarityFill = this.root.querySelector<HTMLElement>('#meter-clarity-fill');
+    const clarityVal = this.root.querySelector<HTMLElement>('#meter-clarity-val');
+    const statusBadge = this.root.querySelector<HTMLElement>('#meter-status-badge');
+
+    if (!rmsFill || !rmsVal) return;
+
+    const curRms = this.audioEngine.latestRawRms;
+    const curClarity = this.audioEngine.latestRawClarity;
+    const rmsPct = Math.min(100, Math.max(0, (curRms / 0.08) * 100));
+    const clarityPct = Math.min(100, Math.max(0, curClarity * 100));
+
+    rmsFill.style.width = `${rmsPct.toFixed(1)}%`;
+    rmsVal.textContent = curRms.toFixed(3);
+
+    if (clarityFill && clarityVal) {
+      clarityFill.style.width = `${clarityPct.toFixed(1)}%`;
+      clarityVal.textContent = `${Math.round(clarityPct)}%`;
+    }
+
+    const isGated =
+      this.filterSettings.noiseGateEnabled && curRms < this.filterSettings.noiseGateRms;
+    const isUnclear = curClarity < this.filterSettings.clarityThreshold;
+
+    if (isGated) {
+      rmsFill.classList.add('gated');
+      if (statusBadge) {
+        statusBadge.className = 'badge-status-silent';
+        statusBadge.textContent = '⚪ Ниже порога (тишина)';
+      }
+    } else if (isUnclear) {
+      rmsFill.classList.remove('gated');
+      if (statusBadge) {
+        statusBadge.className = 'badge-status-silent';
+        statusBadge.textContent = '🟡 Шум / Голос (нечистый тон)';
+      }
+    } else {
+      rmsFill.classList.remove('gated');
+      if (statusBadge) {
+        statusBadge.className = 'badge-status-active';
+        statusBadge.textContent = '🟢 Звучит чистая нота';
       }
     }
   }

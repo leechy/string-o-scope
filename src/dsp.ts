@@ -25,7 +25,9 @@ export function detectPitchMPM(
   minFreq: number,
   maxFreq: number,
   refA4: ReferencePitch,
-  analysisWindowSize?: number
+  analysisWindowSize?: number,
+  rmsThreshold = 0.008,
+  minClarity = 0.35
 ): PitchDetectionResult {
   const N = analysisWindowSize ? Math.min(buffer.length, analysisWindowSize) : buffer.length;
   const startOffset = buffer.length - N;
@@ -42,7 +44,7 @@ export function detectPitchMPM(
   const rms = Math.sqrt(sumSq / N);
 
   // Noise gate threshold
-  if (rms < 0.008) {
+  if (rms < rmsThreshold) {
     return { frequency: null, midi: null, clarity: 0, rms };
   }
 
@@ -119,7 +121,7 @@ export function detectPitchMPM(
     }
   }
 
-  if (chosenPeak.val < 0.35) {
+  if (chosenPeak.val < minClarity) {
     return { frequency: null, midi: null, clarity: chosenPeak.val, rms };
   }
 

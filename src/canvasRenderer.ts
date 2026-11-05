@@ -23,6 +23,7 @@ export class SoundCanvasRenderer {
 
   // Camera state (Spec 3.C: Vertical Camera Deadzone & Spring Recentering)
   public cameraCenterMidi: number;
+  public cameraDampingEnabled = true;
   private cameraVelocity = 0;
   private pitchStableTimer = 0;
   private lastTrackedMidi = 60;
@@ -88,11 +89,21 @@ export class SoundCanvasRenderer {
 
     // 1. Top / Bottom 25% Boundary Push
     if (activeMidi > upperBound) {
-      this.cameraCenterMidi = activeMidi - deadzoneHalfSpan;
+      const targetCenter = activeMidi - deadzoneHalfSpan;
+      if (this.cameraDampingEnabled) {
+        this.cameraCenterMidi += (targetCenter - this.cameraCenterMidi) * Math.min(1, dt * 8.5);
+      } else {
+        this.cameraCenterMidi = targetCenter;
+      }
       this.cameraVelocity = 0;
       this.pitchStableTimer = 0;
     } else if (activeMidi < lowerBound) {
-      this.cameraCenterMidi = activeMidi + deadzoneHalfSpan;
+      const targetCenter = activeMidi + deadzoneHalfSpan;
+      if (this.cameraDampingEnabled) {
+        this.cameraCenterMidi += (targetCenter - this.cameraCenterMidi) * Math.min(1, dt * 8.5);
+      } else {
+        this.cameraCenterMidi = targetCenter;
+      }
       this.cameraVelocity = 0;
       this.pitchStableTimer = 0;
     } else {
@@ -541,6 +552,8 @@ export class SoundCanvasRenderer {
       if (curr.x - prev.x > 80) continue;
 
       const f = curr.frame;
+      if (f.isDiscontinuous || Math.abs(curr.y - prev.y) > this.height * 0.45) continue;
+
       const isGhost = f.isSilent;
 
       if (isGhost) {

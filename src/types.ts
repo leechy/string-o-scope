@@ -38,6 +38,7 @@ export interface TelemetryFrame {
   primaryMidi: number; // continuous MIDI note (float)
   frozenMidi: number; // last confident MIDI pitch held during silence
   isSilent: boolean; // true when below noise gate
+  isDiscontinuous?: boolean; // true when pitch leaped abruptly or resumed from silence
   opacity: number; // 0.05..0.10 during silence ("Ghost Thread"), 1.0 when active
   clarity: number; // 0..1 pitch confidence from MPM/autocorrelation
   noisiness: number; // 0..1 bow noise (spectral flatness + harmonic residual)
@@ -47,6 +48,66 @@ export interface TelemetryFrame {
   secondaryMidi: number | null; // simultaneous 2nd string MIDI pitch
   secondaryRms: number; // relative amplitude of 2nd string (0..1)
   secondaryStringIndex: number | null; // 0..3 index of closest open string
+}
+
+export interface FilterSettings {
+  panelOpen: boolean;
+  // Bandpass filters
+  highPassEnabled: boolean;
+  highPassFreq: number; // Hz (e.g. 185 Hz for violin)
+  lowPassEnabled: boolean;
+  lowPassFreq: number; // Hz (e.g. 4500 Hz)
+
+  // Noise gate
+  noiseGateEnabled: boolean;
+  noiseGateRms: number; // 0.005..0.080
+
+  // Pitch confidence threshold
+  clarityThreshold: number; // 0.35..0.90
+
+  // Octave jump rejection
+  octaveJumpRejection: boolean;
+
+  // Median filtering
+  medianFilterFrames: 1 | 3 | 5;
+
+  // Discontinuity line breaking
+  breakLineOnLeap: boolean;
+  maxContinuousLeapMidi: number; // semitones (e.g. 8)
+
+  // Camera damping
+  cameraDampingEnabled: boolean;
+}
+
+export function getDefaultFilterSettings(instrumentId: InstrumentId): FilterSettings {
+  let highPassFreq = 185;
+  let lowPassFreq = 4800;
+  if (instrumentId === 'viola') {
+    highPassFreq = 120;
+    lowPassFreq = 4200;
+  } else if (instrumentId === 'cello') {
+    highPassFreq = 60;
+    lowPassFreq = 3400;
+  } else if (instrumentId === 'bass') {
+    highPassFreq = 36;
+    lowPassFreq = 2400;
+  }
+
+  return {
+    panelOpen: false,
+    highPassEnabled: true,
+    highPassFreq,
+    lowPassEnabled: true,
+    lowPassFreq,
+    noiseGateEnabled: true,
+    noiseGateRms: 0.020,
+    clarityThreshold: 0.58,
+    octaveJumpRejection: true,
+    medianFilterFrames: 3,
+    breakLineOnLeap: true,
+    maxContinuousLeapMidi: 8,
+    cameraDampingEnabled: true,
+  };
 }
 
 export interface SimulatorState {

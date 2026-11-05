@@ -1,4 +1,6 @@
 import {
+  FilterSettings,
+  getDefaultFilterSettings,
   InstrumentSpec,
   ReferencePitch,
   SimulatorState,
@@ -22,11 +24,24 @@ export class AudioEngine {
   // Configurable ring buffer duration in seconds (default 60s)
   public maxHistorySeconds = 60;
 
-  // Microphone nodes
+  // Microphone nodes & Biquad filters
   private micStream: MediaStream | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
+  private micHighPass: BiquadFilterNode | null = null;
+  private micLowPass: BiquadFilterNode | null = null;
   public micActive = false;
   public micError: string | null = null;
+
+  // Real-time meters for UI tuning
+  public latestRawRms = 0;
+  public latestRawClarity = 0;
+  public filterSettings: FilterSettings;
+
+  // Median filter & jump suppression buffers
+  private medianHistory: number[] = [];
+  private octaveJumpCandidateFrames = 0;
+  private wasPreviouslySilent = true;
+  private prevEmittedMidi = 60;
 
   // Simulator nodes
   private simMasterGain: GainNode | null = null;
@@ -77,8 +92,24 @@ export class AudioEngine {
   constructor(instrument: InstrumentSpec, refA4: ReferencePitch) {
     this.instrument = instrument;
     this.refA4 = refA4;
+    this.filterSettings = getDefaultFilterSettings(instrument.id);
     this.lastConfidentMidi = instrument.strings[1].midi;
     this.smoothedMidi = this.lastConfidentMidi;
+    this.prevEmittedMidi = this.lastConfidentMidi;
+  }
+
+  public setFilterSettings(settings: FilterSettings): void {
+    this.filterSettings = { ...settings };
+    this.updateHardwareFilters();
+  }
+
+  public updateHardwareFilters(): void {
+    if (!this.ctx || !this.micHighPass || !this.micLowPass) return;
+    const now = this.ctx.currentTime;
+    const hpFreq = this.filterSettings.highPassEnabled ? this.filterSettings.highPassFreq : 10;
+    const lpFreq = this.filterSettings.lowPassEnabled ? this.filterSettings.lowPassFreq : 22000;
+    this.micHighPass.frequency.setTargetAtTime(Math.max(10, hpFreq), now, 0.015);
+    this.micLowPass.frequency.setTargetAtTime(Math.min(22000, lpFreq), now, 0.015);
   }
 
   public setMaxHistorySeconds(seconds: number): void {
@@ -118,9 +149,14 @@ export class AudioEngine {
     if (instrumentChanged) {
       this.lastConfidentMidi = instrument.strings[1].midi;
       this.smoothedMidi = this.lastConfidentMidi;
+      this.prevEmittedMidi = this.lastConfidentMidi;
+      this.filterSettings = getDefaultFilterSettings(instrument.id);
+      this.updateHardwareFilters();
       this.frames = [];
       this.pcmWriteIndex = 0;
       this.pcmTotalSamplesWritten = 0;
+      this.medianHistory = [];
+      this.octaveJumpCandidateFrames = 0;
     }
 
     if (this.analyser) {
@@ -284,7 +320,21 @@ export class AudioEngine {
 
       if (this.ctx && this.inputBus) {
         this.micSource = this.ctx.createMediaStreamSource(this.micStream);
-        this.micSource.connect(this.inputBus);
+
+        this.micHighPass = this.ctx.createBiquadFilter();
+        this.micHighPass.type = 'highpass';
+        this.micHighPass.Q.value = 0.707;
+
+        this.micLowPass = this.ctx.createBiquadFilter();
+        this.micLowPass.type = 'lowpass';
+        this.micLowPass.Q.value = 0.707;
+
+        this.updateHardwareFilters();
+
+        this.micSource.connect(this.micHighPass);
+        this.micHighPass.connect(this.micLowPass);
+        this.micLowPass.connect(this.inputBus);
+
         this.micActive = true;
         this.micError = null;
         return true;
@@ -305,6 +355,22 @@ export class AudioEngine {
         // ignore
       }
       this.micSource = null;
+    }
+    if (this.micHighPass) {
+      try {
+        this.micHighPass.disconnect();
+      } catch {
+        // ignore
+      }
+      this.micHighPass = null;
+    }
+    if (this.micLowPass) {
+      try {
+        this.micLowPass.disconnect();
+      } catch {
+        // ignore
+      }
+      this.micLowPass = null;
     }
     if (this.micStream) {
       for (const track of this.micStream.getTracks()) {
@@ -386,14 +452,22 @@ export class AudioEngine {
     const maxFreq = midiToFreq(this.instrument.maxMidi, this.refA4);
 
     const windowSize = this.instrument.fftSize;
+    const rmsGate = this.filterSettings.noiseGateEnabled ? this.filterSettings.noiseGateRms * 0.7 : 0.005;
+    const minClarity = Math.max(0.2, this.filterSettings.clarityThreshold * 0.65);
+
     const pitchRes = detectPitchMPM(
       this.timeDomainBuf,
       this.ctx.sampleRate,
       minFreq,
       maxFreq,
       this.refA4,
-      windowSize
+      windowSize,
+      rmsGate,
+      minClarity
     );
+
+    this.latestRawRms = pitchRes.rms;
+    this.latestRawClarity = pitchRes.clarity;
 
     const specRes = analyzeSpectrumAndPolyphony(
       this.freqDbBuf,
@@ -405,22 +479,70 @@ export class AudioEngine {
       this.refA4
     );
 
-    const isConfident =
+    const reqRms = this.filterSettings.noiseGateEnabled ? this.filterSettings.noiseGateRms : 0.005;
+    const reqClarity = this.filterSettings.clarityThreshold;
+
+    const inRange =
       pitchRes.midi !== null &&
-      pitchRes.rms >= 0.009 &&
-      pitchRes.clarity >= 0.45 &&
-      pitchRes.midi >= this.instrument.minMidi - 2 &&
+      pitchRes.midi >= this.instrument.minMidi - 1.5 &&
       pitchRes.midi <= this.instrument.maxMidi + 2;
 
-    if (isConfident && pitchRes.midi !== null) {
-      if (this.confidentHoldCounter === 0) {
-        this.smoothedMidi = pitchRes.midi;
-      } else {
-        const diff = pitchRes.midi - this.smoothedMidi;
-        if (Math.abs(diff) > 1.5) {
-          this.smoothedMidi = pitchRes.midi;
+    const isConfident =
+      pitchRes.midi !== null &&
+      inRange &&
+      pitchRes.rms >= reqRms &&
+      pitchRes.clarity >= reqClarity;
+
+    let candidateMidi = pitchRes.midi;
+
+    if (isConfident && candidateMidi !== null) {
+      // 1. Octave Jump Rejection
+      if (this.filterSettings.octaveJumpRejection && this.confidentHoldCounter >= 2) {
+        const diffFromCurrent = candidateMidi - this.smoothedMidi;
+        const absDiff = Math.abs(diffFromCurrent);
+        const isOctaveOrFifth =
+          Math.abs(absDiff - 12) < 0.45 ||
+          Math.abs(absDiff - 24) < 0.45 ||
+          Math.abs(absDiff - 19) < 0.45;
+
+        if (isOctaveOrFifth) {
+          this.octaveJumpCandidateFrames++;
+          // Require at least 4 consecutive frames before accepting an octave leap
+          if (this.octaveJumpCandidateFrames < 4) {
+            candidateMidi = this.smoothedMidi;
+          } else {
+            this.octaveJumpCandidateFrames = 0;
+          }
         } else {
-          this.smoothedMidi += diff * 0.48;
+          this.octaveJumpCandidateFrames = 0;
+        }
+      } else {
+        this.octaveJumpCandidateFrames = 0;
+      }
+
+      // 2. Median Filter
+      if (this.filterSettings.medianFilterFrames > 1) {
+        this.medianHistory.push(candidateMidi);
+        if (this.medianHistory.length > this.filterSettings.medianFilterFrames) {
+          this.medianHistory.shift();
+        }
+        if (this.medianHistory.length >= 3) {
+          const sorted = [...this.medianHistory].sort((a, b) => a - b);
+          candidateMidi = sorted[Math.floor(sorted.length / 2)];
+        }
+      } else {
+        this.medianHistory = [];
+      }
+
+      // 3. Temporal Smoothing
+      if (this.confidentHoldCounter === 0) {
+        this.smoothedMidi = candidateMidi;
+      } else {
+        const diff = candidateMidi - this.smoothedMidi;
+        if (Math.abs(diff) > 2.0) {
+          this.smoothedMidi = candidateMidi;
+        } else {
+          this.smoothedMidi += diff * 0.46;
         }
       }
       this.confidentHoldCounter++;
@@ -431,11 +553,28 @@ export class AudioEngine {
       this.smoothedOpacity += (1.0 - this.smoothedOpacity) * 0.35;
     } else {
       this.confidentHoldCounter = 0;
+      this.medianHistory = [];
+      this.octaveJumpCandidateFrames = 0;
       this.smoothedOpacity += (0.08 - this.smoothedOpacity) * 0.22;
     }
 
     const isSilent = this.confidentHoldCounter === 0;
     const activeMidi = isSilent ? this.lastConfidentMidi : this.smoothedMidi;
+
+    // Discontinuity detection for avoiding diagonal streaks across the screen
+    let isDiscontinuous = false;
+    if (this.filterSettings.breakLineOnLeap) {
+      if (this.wasPreviouslySilent && !isSilent) {
+        isDiscontinuous = true;
+      } else if (
+        !isSilent &&
+        Math.abs(activeMidi - this.prevEmittedMidi) > this.filterSettings.maxContinuousLeapMidi
+      ) {
+        isDiscontinuous = true;
+      }
+    }
+    this.wasPreviouslySilent = isSilent;
+    this.prevEmittedMidi = activeMidi;
 
     let targetNoisiness = specRes.noisiness;
     if (sim.enabled && !isSilent) {
@@ -469,6 +608,7 @@ export class AudioEngine {
       primaryMidi: activeMidi,
       frozenMidi: this.lastConfidentMidi,
       isSilent,
+      isDiscontinuous,
       opacity: Math.max(0.07, Math.min(1.0, this.smoothedOpacity)),
       clarity: isSilent ? 0 : pitchRes.clarity,
       noisiness: isSilent ? 0 : Math.max(0, Math.min(1, this.smoothedNoisiness)),
