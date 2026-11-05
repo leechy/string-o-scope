@@ -32,3 +32,4 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STRING_O_SCOPE }}
           channelId: live
           projectId: string-o-scope
+
